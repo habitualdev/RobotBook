@@ -392,7 +392,7 @@ func main() {
 	}
 	baseMap := LoadMap(targetUrl)
 	test, _ := os.ReadFile(targetPayload)
-	initTemplate := fmt.Sprintf(base, "https://microsoft.com/robots.txt")
+	initTemplate := fmt.Sprintf(base, targetUrl)
 	b64string := base64.StdEncoding.EncodeToString(test)
 	for i := 0; i < len(b64string); i++ {
 		char := string(b64string[i])
