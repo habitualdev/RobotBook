@@ -3,11 +3,9 @@ package main
 import (
 	"bufio"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"flag"
 	"fmt"
-	"github.com/schollz/progressbar/v3"
 	"io"
 	"io/ioutil"
 	"log"
@@ -129,9 +127,7 @@ func LoadMap(url string) Base64Map {
 	body, _ := ioutil.ReadAll(r.Body)
 	baseMap := Base64Map{}
 	sourceLen := len(body)
-	bar := progressbar.Default(int64(sourceLen))
 	for i := 0; i < sourceLen; i++ {
-		bar.Add(1)
 		switch body[i] {
 		case 'a':
 			baseMap.La = append(baseMap.La, i)
@@ -266,7 +262,6 @@ func LoadMap(url string) Base64Map {
 
 		}
 	}
-	bar.Close()
 	return baseMap
 }
 
@@ -463,26 +458,12 @@ func main() {
 	xorHash := xorSha.Sum(nil)
 	xorHashString := hex.EncodeToString(xorHash)
 	xor(payload, xorHashString)
-	b64string := base64.StdEncoding.EncodeToString(test)
-	bar := progressbar.Default(int64(len(b64string)))
 
 	f, _ := os.OpenFile("init.go", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	defer f.Close()
 	f.Write([]byte(fmt.Sprintf(base, targetUrl)))
 	for i := 0; i < len(xorHashString); i++ {
-		/*
-			bar.Add(1)
-			char := string(b64string[i])
-			intMaps := baseMap.getLetter(char)
-			if len(intMaps) == 0 {
-				f.Write([]byte("\n" + fmt.Sprintf(StringTemplate, "\""+char+"\"")))
-			} else if len(intMaps) == 1 {
-				f.Write([]byte("\n" + fmt.Sprintf(IntTemplate, intMaps[0])))
-			} else {
-				f.Write([]byte("\n" + fmt.Sprintf(IntTemplate, intMaps[rand.Intn(len(intMaps)-1)])))
-			}
-		*/
-		bar.Add(1)
+
 		char := string(xorHashString[i])
 		intMaps := baseMap.getLetter(char)
 		if len(intMaps) == 0 {
@@ -493,8 +474,6 @@ func main() {
 			f.Write([]byte("\n" + fmt.Sprintf(IntTemplate, i, intMaps[rand.Intn(len(intMaps)-1)])))
 		}
 	}
-
-	bar.Finish()
 	f.Write([]byte("\n" + end))
 
 }
