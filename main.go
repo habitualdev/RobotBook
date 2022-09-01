@@ -26,6 +26,7 @@ import (
 )
 	var Payload []byte
 	func init(){
+		Payload = make([]byte, 64)
 		r, _ := http.Get("%s")
 		defer r.Body.Close()
 		body, _ := ioutil.ReadAll(r.Body)
